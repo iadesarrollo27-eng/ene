@@ -64,13 +64,25 @@ def main():
     args = ap.parse_args()
 
     client = None
+    location = None
     if not args.dry_run:
+        from google.api_core.exceptions import NotFound
         from google.cloud import bigquery
 
+        dataset_id = f"{cfg.PROJECT_ID}.{cfg.DS_BRONZE}"
         client = cfg.bq_client()
-        client.create_dataset(
-            bigquery.Dataset(f"{cfg.PROJECT_ID}.{cfg.DS_BRONZE}"), exists_ok=True
-        )
+        try:
+            # Los jobs deben correr en la misma región que el dataset
+            location = client.get_dataset(dataset_id).location
+        except NotFound:
+            ds = bigquery.Dataset(dataset_id)
+            ds.location = cfg.BQ_LOCATION or "US"
+            location = client.create_dataset(ds).location
+            print(f"Dataset {dataset_id} creado en {location}")
+        if cfg.BQ_LOCATION and cfg.BQ_LOCATION.lower() != location.lower():
+            print(f"Aviso: BQ_LOCATION={cfg.BQ_LOCATION} pero el dataset está en {location}; se usa {location}")
+        client = cfg.bq_client(location)
+        print(f"Dataset destino: {dataset_id} ({location})")
 
     now = datetime.now(timezone.utc).isoformat()
     for path, sheet, table, df in read_sources():
@@ -97,6 +109,7 @@ def main():
         job = client.load_table_from_json(
             rows,
             table_id,
+            location=location,
             job_config=bigquery.LoadJobConfig(
                 schema=schema, write_disposition="WRITE_TRUNCATE"
             ),
